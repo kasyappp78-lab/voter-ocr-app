@@ -4,7 +4,7 @@ from pdf2image import convert_from_bytes
 import re
 import pandas as pd
 from io import BytesIO
-from PIL import ImageOps, ImageFilter
+from PIL import ImageOps, ImageEnhance, Image
 
 # Page Configuration
 st.set_page_config(page_title="Trikaripur Voter Analytics", layout="wide")
@@ -21,40 +21,38 @@ def extract_voter_data_fuzzy(text):
     current_house = None
 
     for line in lines:
-        # 1. FUZZY NAME: Matches 'പേര്' even if start/end characters are slightly off
+        # Matches 'പേര്', 'വേര്', 'പെര്' (Name)
         name_match = re.search(r"(?:പേ|വേ|പെ|മേ|ര|ർ)\s*[രർ]\s*്\s*[:\s]+([^\n#]+)", line)
         if name_match:
             current_name = name_match.group(1).strip()
 
-        # 2. FUZZY HOUSE NO: Matches 'വീട്ടു നമ്പർ' with flexible spacing
+        # Matches 'വീട്ടു നമ്പർ' and variations (House Number)
         house_match = re.search(r"(?:വീ|വി)\s*[ടട്ട]\s*്\s*[ടട്ട]\s*ു\s*ന\s*ം\s*പ\s*ർ\s*[:\s]+([^\n]+)", line)
         if house_match:
             current_house = house_match.group(1).strip()
 
-        # 3. FUZZY AGE (The Anchor): Matches 'വയസ്സ്' or any similar shape followed by digits
+        # Matches 'വയസ്സ്' and variations followed by digits (Age)
         age_match = re.search(r"(?:വയ|ഖയ|വിയ|യ|സ)\s*[സശ]\s*്\s*[സശ]\s*്\s*[:\s]+(\d+)", line)
         if age_match:
             try:
                 age_val = int(age_match.group(1))
-                # Only add if we at least have a Name to pair it with
                 if current_name:
                     voters.append({
                         "Name": current_name,
                         "Age": age_val,
                         "House": current_house if current_house else "Unknown"
                     })
-                    # Reset variables to look for the next person
+                    # Reset after finding the Age (the anchor for one voter block)
                     current_name, current_house = None, None
             except:
                 continue
                 
     return voters
-    
+
 # --- STEP 2: UPLOAD & PROCESSING ---
 uploaded_file = st.file_uploader("Upload Scanned Booth PDF", type="pdf")
 
 if uploaded_file:
-    # Sidebar Controls
     st.sidebar.header("Settings")
     debug_mode = st.sidebar.checkbox("Show AI Raw Text")
     
@@ -65,13 +63,16 @@ if uploaded_file:
             images = convert_from_bytes(uploaded_file.read())
             
             for i, image in enumerate(images):
-                if i < 2: continue # Skip map pages
+                if i < 2: continue # Skip map/index pages
                 
-                # Image Pre-processing for better OCR
-                image = image.convert('L') 
-                image = ImageOps.autocontrast(image)
+                # --- IMAGE ENHANCEMENT ---
+                image = image.convert('L') # Grayscale
+                image = ImageOps.autocontrast(image) # Increase Contrast
+                enhancer = ImageEnhance.Sharpness(image)
+                image = enhancer.enhance(2.0) # Sharpening
                 
-                # OCR Call - using Malayalam language
+                # OCR Call - using Malayalam language pack
+                # psm 6: Assume a single uniform block of text
                 raw_text = pytesseract.image_to_string(image, lang='mal', config='--oem 3 --psm 6')
                 
                 if debug_mode:
@@ -94,18 +95,16 @@ if uploaded_file:
             sort_order = st.radio("Order by Age", ["Youngest First", "Oldest First"])
             df = df.sort_values(by="Age", ascending=(sort_order == "Youngest First"))
             
-            # Organizational Filters
+            # Filters
             st.subheader("Quick Filters")
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
             with col1:
-                if st.button("Balasangham Segment (<18)"):
-                    df = df[df['Age'] < 18]
-            with col2:
-                if st.button("SFI Segment (18-25)"):
+                if st.sidebar.button("Show Only SFI (18-25)"):
                     df = df[(df['Age'] >= 18) & (df['Age'] <= 25)]
-            with col3:
-                if st.button("Clear Filters"):
-                    pass # Reset happens on next rerun
+            with col2:
+                search = st.text_input("Search Name or House Number")
+                if search:
+                    df = df[df['Name'].str.contains(search, case=False) | df['House'].str.contains(search, case=False)]
 
             st.dataframe(df, use_container_width=True)
 
@@ -121,4 +120,4 @@ if uploaded_file:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
-            st.error("AI couldn't find Name/Age patterns. Check 'Show AI Raw Text' to see if OCR is working.")
+            st.error("AI couldn't find Name/Age patterns. Check 'Show AI Raw Text' to see if the Malayalam is readable.")
