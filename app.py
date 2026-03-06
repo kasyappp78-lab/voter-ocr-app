@@ -21,35 +21,35 @@ def extract_voter_data_fuzzy(text):
     current_house = None
 
     for line in lines:
-        # Use regex that ignores common OCR typos in Malayalam
-        # Matches 'പേര്', 'വേര്', 'പെര്', etc.
+        # 1. FUZZY NAME: Matches 'പേര്' even if start/end characters are slightly off
         name_match = re.search(r"(?:പേ|വേ|പെ|മേ|ര|ർ)\s*[രർ]\s*്\s*[:\s]+([^\n#]+)", line)
         if name_match:
             current_name = name_match.group(1).strip()
 
-        # Matches 'വീട്ടു നമ്പർ' and variations
-        house_match = re.search(r"(?:വീ|വി)\s*ട\s*്\s*ട\s*ു\s*ന\s*ം\s*പ\s*ർ\s*[:\s]+([^\n]+)", line)
+        # 2. FUZZY HOUSE NO: Matches 'വീട്ടു നമ്പർ' with flexible spacing
+        house_match = re.search(r"(?:വീ|വി)\s*[ടട്ട]\s*്\s*[ടട്ട]\s*ു\s*ന\s*ം\s*പ\s*ർ\s*[:\s]+([^\n]+)", line)
         if house_match:
             current_house = house_match.group(1).strip()
 
-        # Matches 'വയസ്സ്' and variations followed by digits
-        age_match = re.search(r"(?:വയ|ഖയ|വിയ|യ)\s*[സശ]\s*്\s*[സശ]\s*്\s*[:\s]+(\d+)", line)
+        # 3. FUZZY AGE (The Anchor): Matches 'വയസ്സ്' or any similar shape followed by digits
+        age_match = re.search(r"(?:വയ|ഖയ|വിയ|യ|സ)\s*[സശ]\s*്\s*[സശ]\s*്\s*[:\s]+(\d+)", line)
         if age_match:
             try:
                 age_val = int(age_match.group(1))
+                # Only add if we at least have a Name to pair it with
                 if current_name:
                     voters.append({
                         "Name": current_name,
                         "Age": age_val,
                         "House": current_house if current_house else "Unknown"
                     })
-                    # Reset after finding the Age (the anchor)
+                    # Reset variables to look for the next person
                     current_name, current_house = None, None
             except:
                 continue
                 
     return voters
-
+    
 # --- STEP 2: UPLOAD & PROCESSING ---
 uploaded_file = st.file_uploader("Upload Scanned Booth PDF", type="pdf")
 
