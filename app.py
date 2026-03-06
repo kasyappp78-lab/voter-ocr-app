@@ -6,14 +6,14 @@ import pandas as pd
 from io import BytesIO
 from PIL import ImageOps, ImageFilter
 
-# SETPAGE CONFIG
-st.set_page_config(page_title="Trikaripur Voter Sorter", layout="wide")
+# Page Configuration
+st.set_page_config(page_title="Trikaripur Voter Analytics", layout="wide")
 
-st.title("🗳️ Booth Analytics: Trikaripur (Scanned PDF Mode)")
-st.info("This app uses OCR to read scanned Malayalam text. Processing may take 5-10 seconds per page.")
+st.title("🗳️ Booth Data Tool: Trikaripur")
+st.markdown("---")
 
-# --- STEP 1: FLEXIBLE EXTRACTION FUNCTION ---
-def extract_voter_data_flexible(text):
+# --- STEP 1: FUZZY EXTRACTION LOGIC ---
+def extract_voter_data_fuzzy(text):
     voters = []
     lines = text.split('\n')
     
@@ -21,98 +21,104 @@ def extract_voter_data_flexible(text):
     current_house = None
 
     for line in lines:
-        # Look for Name (Flexible for OCR errors in 'പേര്')
-        name_match = re.search(r"[പവേ]\s*[രർ]\s*്\s*[:\s]+([^\n#]+)", line)
+        # Use regex that ignores common OCR typos in Malayalam
+        # Matches 'പേര്', 'വേര്', 'പെര്', etc.
+        name_match = re.search(r"(?:പേ|വേ|പെ|മേ|ര|ർ)\s*[രർ]\s*്\s*[:\s]+([^\n#]+)", line)
         if name_match:
             current_name = name_match.group(1).strip()
 
-        # Look for House Number (Flexible for 'വീട്ടു നമ്പർ')
-        house_match = re.search(r"വീ\s*ട\s*്\s*ട\s*ു\s*ന\s*ം\s*പ\s*ർ\s*[:\s]+([^\n]+)", line)
+        # Matches 'വീട്ടു നമ്പർ' and variations
+        house_match = re.search(r"(?:വീ|വി)\s*ട\s*്\s*ട\s*ു\s*ന\s*ം\s*പ\s*ർ\s*[:\s]+([^\n]+)", line)
         if house_match:
             current_house = house_match.group(1).strip()
 
-        # Look for Age (The anchor for a complete record)
-        age_match = re.search(r"വയ\s*[സശ]\s*്\s*[സശ]\s*്\s*[:\s]+(\d+)", line)
+        # Matches 'വയസ്സ്' and variations followed by digits
+        age_match = re.search(r"(?:വയ|ഖയ|വിയ|യ)\s*[സശ]\s*്\s*[സശ]\s*്\s*[:\s]+(\d+)", line)
         if age_match:
-            age_val = int(age_match.group(1))
-            if current_name:
-                voters.append({
-                    "Name": current_name,
-                    "Age": age_val,
-                    "House": current_house if current_house else "Not Found"
-                })
-                # Reset for next voter box
-                current_name, current_house = None, None
+            try:
+                age_val = int(age_match.group(1))
+                if current_name:
+                    voters.append({
+                        "Name": current_name,
+                        "Age": age_val,
+                        "House": current_house if current_house else "Unknown"
+                    })
+                    # Reset after finding the Age (the anchor)
+                    current_name, current_house = None, None
+            except:
+                continue
+                
     return voters
 
-# --- STEP 2: UI & UPLOAD ---
-uploaded_file = st.file_uploader("Upload the Scanned Booth PDF", type="pdf")
+# --- STEP 2: UPLOAD & PROCESSING ---
+uploaded_file = st.file_uploader("Upload Scanned Booth PDF", type="pdf")
 
 if uploaded_file:
-    # Option to see what the AI is "seeing"
-    debug_mode = st.checkbox("Show AI Raw Text (Use this if no data is found)")
-
-    if st.button("Start AI Scanning"):
-        with st.status("AI is processing pages... This will take a moment.") as status:
+    # Sidebar Controls
+    st.sidebar.header("Settings")
+    debug_mode = st.sidebar.checkbox("Show AI Raw Text")
+    
+    if st.button("🚀 Start AI Analysis"):
+        with st.status("AI is reading the scan... This may take 2-4 minutes.") as status:
             all_voters = []
-            
             # Convert PDF to Images
-            # Note: poppler_path is not needed on Streamlit Cloud
             images = convert_from_bytes(uploaded_file.read())
             
             for i, image in enumerate(images):
-                if i < 2: continue # Skip cover and map pages
+                if i < 2: continue # Skip map pages
                 
-                # --- IMAGE PRE-PROCESSING (Crucial for Scans) ---
-                # Convert to Grayscale
+                # Image Pre-processing for better OCR
                 image = image.convert('L') 
-                # Increase contrast to make text pop
                 image = ImageOps.autocontrast(image)
                 
-                # Run OCR with Malayalam Language
-                # psm 6 assumes a uniform block of text (voter boxes)
-                raw_text = pytesseract.image_to_string(image, lang='mal', config='--psm 6')
+                # OCR Call - using Malayalam language
+                raw_text = pytesseract.image_to_string(image, lang='mal', config='--oem 3 --psm 6')
                 
                 if debug_mode:
-                    st.text_area(f"Raw Text Page {i+1}", raw_text, height=150)
+                    st.text_area(f"Page {i+1} Raw Text", raw_text, height=100)
                 
-                # Extract structured data
-                page_data = extract_voter_data_flexible(raw_text)
-                all_data_len = len(page_data)
+                # Extract Data
+                page_data = extract_voter_data_fuzzy(raw_text)
                 all_voters.extend(page_data)
-                
-                st.write(f"✅ Page {i+1}: Found {all_data_len} voters")
+                st.write(f"Processed Page {i+1}: Found {len(page_data)} records.")
             
             status.update(label="Scanning Complete!", state="complete")
 
-        # --- STEP 3: DISPLAY & SORT ---
+        # --- STEP 3: SORTING & DISPLAY ---
         if all_voters:
             df = pd.DataFrame(all_voters)
-            st.divider()
+            
+            st.header("📊 Sorted Voter List")
             
             # Interactive Sorting
-            col1, col2 = st.columns(2)
+            sort_order = st.radio("Order by Age", ["Youngest First", "Oldest First"])
+            df = df.sort_values(by="Age", ascending=(sort_order == "Youngest First"))
+            
+            # Organizational Filters
+            st.subheader("Quick Filters")
+            col1, col2, col3 = st.columns(3)
             with col1:
-                sort_val = st.radio("Age Sorting", ["Youngest to Oldest", "Oldest to Youngest"])
+                if st.button("Balasangham Segment (<18)"):
+                    df = df[df['Age'] < 18]
             with col2:
-                search = st.text_input("Search Name/House Number")
+                if st.button("SFI Segment (18-25)"):
+                    df = df[(df['Age'] >= 18) & (df['Age'] <= 25)]
+            with col3:
+                if st.button("Clear Filters"):
+                    pass # Reset happens on next rerun
 
-            # Apply Logic
-            df = df.sort_values(by="Age", ascending=(sort_val == "Youngest to Oldest"))
-            if search:
-                df = df[df['Name'].str.contains(search, case=False) | df['House'].str.contains(search, case=False)]
-
-            st.success(f"Successfully compiled {len(df)} voters.")
             st.dataframe(df, use_container_width=True)
 
-            # Export to Excel
+            # --- STEP 4: EXCEL DOWNLOAD ---
             output = BytesIO()
-            df.to_excel(output, index=False)
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False)
+            
             st.download_button(
-                label="📥 Download Sorted Excel",
+                label="📥 Download Age-Sorted Excel",
                 data=output.getvalue(),
-                file_name="Trikaripur_Sorted_List.xlsx",
+                file_name="Trikaripur_Booth_Sorted.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
-            st.error("No voter data could be identified. Check 'Show AI Raw Text' to see if OCR is failing.")
+            st.error("AI couldn't find Name/Age patterns. Check 'Show AI Raw Text' to see if OCR is working.")
