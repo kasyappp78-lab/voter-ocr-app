@@ -6,65 +6,40 @@ import pandas as pd
 from io import BytesIO
 
 # --- IMPROVED EXTRACTION LOGIC ---
-def extract_flexible_data(text):
-    records = []
-    # Split text into voter blocks (each voter usually starts with a serial number or Name)
-    # We look for the patterns specifically used in Kerala Voter Lists
+def extract_voter_data_smart(text):
+    voters = []
+    # Split the text into lines to process voter blocks
+    lines = text.split('\n')
     
-    # regex explanation: 
-    # 'പേര്' followed by anything that isn't a newline
-    # 'വയസ്സ്' followed by optional spaces/colon and then digits
-    names = re.findall(r"പേര്[\s:]+([^\n#]+)", text)
-    ages = re.findall(r"വയസ്സ്[\s:]+(\d+)", text)
-    # Some lists use 'വീട്ടു നമ്പർ', others use 'വീട്ടുനമ്പർ'
-    houses = re.findall(r"വീട്ടു[\s]*നമ്പർ[\s:]+([^\n]+)", text)
-    
-    # Zip them together based on the shortest list found to avoid index errors
-    for n, a, h in zip(names, ages, houses):
-        records.append({
-            "Name": n.strip(),
-            "Age": int(a),
-            "House Number": h.strip()
-        })
-    return records
+    current_name = None
+    current_age = None
+    current_house = None
 
-# --- UPDATED APP LOGIC ---
-st.title("🗳️ Trikaripur Voter Data Tool")
+    for line in lines:
+        # 1. Flexible Name Search: Look for 'പേര്' with any symbols/spaces
+        name_match = re.search(r"പേ\s*ര\s*്\s*[:\s]+([^\n]+)", line)
+        if name_match:
+            current_name = name_match.group(1).strip()
 
-uploaded_file = st.file_uploader("Upload PDF", type="pdf")
+        # 2. Flexible House No: Look for 'വീട്ടു' and 'നമ്പർ'
+        house_match = re.search(r"വീ\s*ട\s*്\s*ട\s*ു\s*ന\s*ം\s*പ\s*ർ\s*[:\s]+([^\n]+)", line)
+        if house_match:
+            current_house = house_match.group(1).strip()
 
-if uploaded_file:
-    # Adding a 'Debug' view to see what the AI actually sees
-    show_raw = st.checkbox("Show AI Raw Text (For Troubleshooting)")
-
-    with st.spinner("AI is reading..."):
-        images = convert_from_bytes(uploaded_file.read())
-        all_data = []
-        
-        for i, img in enumerate(images):
-            if i < 2: continue # Skip index
+        # 3. Flexible Age Search: Look for the number after 'വയസ്സ്' 
+        # Even if 'വയസ്സ്' is misread, we look for the pattern 'Age: XX'
+        age_match = re.search(r"വയ\s*സ\s*്\s*സ\s*്\s*[:\s]+(\d+)", line)
+        if age_match:
+            current_age = int(age_match.group(1))
             
-            # Use '--oem 3 --psm 6' for better table/block reading
-            raw_text = pytesseract.image_to_string(img, lang='mal', config='--oem 3 --psm 6')
-            
-            if show_raw:
-                st.text_area(f"Raw Data Page {i+1}", raw_text, height=100)
-            
-            page_records = extract_flexible_data(raw_text)
-            all_data.extend(page_records)
-
-    if all_data:
-        df = pd.DataFrame(all_data)
-        st.success(f"Found {len(df)} voters!")
-        
-        # Sorting
-        df = df.sort_values(by="Age")
-        st.dataframe(df)
-        
-        # Export
-        output = BytesIO()
-        df.to_excel(output, index=False)
-        st.download_button("Download Excel", output.getvalue(), "Booth_List.xlsx")
-    else:
-        st.error("AI read the page but couldn't find the specific words 'പേര്' or 'വയസ്സ്'.")
-        st.info("Try checking the 'Show AI Raw Text' box above to see what the AI is actually reading.")
+            # Once we have an Age, we assume this voter block is complete
+            if current_name:
+                voters.append({
+                    "Name": current_name,
+                    "Age": current_age,
+                    "House": current_house if current_house else "N/A"
+                })
+                # Reset for next voter
+                current_name, current_age, current_house = None, None, None
+                
+    return voters
