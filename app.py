@@ -5,75 +5,66 @@ import re
 import pandas as pd
 from io import BytesIO
 
-st.set_page_config(page_title="Trikaripur Voter Sorter", layout="wide")
-st.title("🗳️ Booth Analytics: Trikaripur")
+# --- IMPROVED EXTRACTION LOGIC ---
+def extract_flexible_data(text):
+    records = []
+    # Split text into voter blocks (each voter usually starts with a serial number or Name)
+    # We look for the patterns specifically used in Kerala Voter Lists
+    
+    # regex explanation: 
+    # 'പേര്' followed by anything that isn't a newline
+    # 'വയസ്സ്' followed by optional spaces/colon and then digits
+    names = re.findall(r"പേര്[\s:]+([^\n#]+)", text)
+    ages = re.findall(r"വയസ്സ്[\s:]+(\d+)", text)
+    # Some lists use 'വീട്ടു നമ്പർ', others use 'വീട്ടുനമ്പർ'
+    houses = re.findall(r"വീട്ടു[\s]*നമ്പർ[\s:]+([^\n]+)", text)
+    
+    # Zip them together based on the shortest list found to avoid index errors
+    for n, a, h in zip(names, ages, houses):
+        records.append({
+            "Name": n.strip(),
+            "Age": int(a),
+            "House Number": h.strip()
+        })
+    return records
 
-uploaded_file = st.file_uploader("Upload Scanned PDF", type="pdf")
+# --- UPDATED APP LOGIC ---
+st.title("🗳️ Trikaripur Voter Data Tool")
+
+uploaded_file = st.file_uploader("Upload PDF", type="pdf")
 
 if uploaded_file:
-    # We use st.cache_data so it doesn't re-scan every time you change a sort option
-    @st.cache_data
-    def process_pdf(file_bytes):
-        voter_records = []
-        images = convert_from_bytes(file_bytes)
-        for i, image in enumerate(images):
-            if i < 2: continue # Skip first 2 pages
-            text = pytesseract.image_to_string(image, lang='mal')
-            
-            # Extracting Name, Age, and House Number
-            names = re.findall(r"പേര്[:\s]+([^\n]+)", text)
-            ages = re.findall(r"വയസ്സ്[:\s]+(\d+)", text)
-            houses = re.findall(r"വീട്ടു നമ്പർ[:\s]+([^\n]+)", text)
-            
-            for n, a, h in zip(names, ages, houses):
-                voter_records.append({
-                    "Name": n.strip(),
-                    "Age": int(a),
-                    "House Number": h.strip()
-                })
-        return voter_records
+    # Adding a 'Debug' view to see what the AI actually sees
+    show_raw = st.checkbox("Show AI Raw Text (For Troubleshooting)")
 
-    # 1. Run the scanning
-    with st.spinner("AI is reading Malayalam... This takes 1-2 minutes."):
-        data = process_pdf(uploaded_file.read())
-    
-    if data:
-        st.success(f"✅ Scanning Complete! Found {len(data)} voters.")
-        df = pd.DataFrame(data)
-
-        # --- THIS PART ADDS THE OPTIONS ---
-        st.divider()
-        st.header("🔍 Sort and Filter List")
+    with st.spinner("AI is reading..."):
+        images = convert_from_bytes(uploaded_file.read())
+        all_data = []
         
-        col1, col2 = st.columns(2)
-        with col1:
-            sort_order = st.selectbox("Sort Age Order", ["Youngest First", "Oldest First"])
-        with col2:
-            filter_org = st.radio("Quick Filter", ["None", "Balasangham (<18)", "SFI (18-25)", "Seniors (80+)"])
+        for i, img in enumerate(images):
+            if i < 2: continue # Skip index
+            
+            # Use '--oem 3 --psm 6' for better table/block reading
+            raw_text = pytesseract.image_to_string(img, lang='mal', config='--oem 3 --psm 6')
+            
+            if show_raw:
+                st.text_area(f"Raw Data Page {i+1}", raw_text, height=100)
+            
+            page_records = extract_flexible_data(raw_text)
+            all_data.extend(page_records)
 
-        # Apply Sorting
-        is_ascending = True if sort_order == "Youngest First" else False
-        df = df.sort_values(by="Age", ascending=is_ascending)
-
-        # Apply Quick Filters
-        if filter_org == "Balasangham (<18)":
-            df = df[df['Age'] < 18]
-        elif filter_org == "SFI (18-25)":
-            df = df[(df['Age'] >= 18) & (df['Age'] <= 25)]
-        elif filter_org == "Seniors (80+)":
-            df = df[df['Age'] >= 80]
-
-        # --- SHOW THE FINAL TABLE ---
-        st.dataframe(df, use_container_width=True)
-
-        # --- DOWNLOAD OPTION ---
+    if all_data:
+        df = pd.DataFrame(all_data)
+        st.success(f"Found {len(df)} voters!")
+        
+        # Sorting
+        df = df.sort_values(by="Age")
+        st.dataframe(df)
+        
+        # Export
         output = BytesIO()
         df.to_excel(output, index=False)
-        st.download_button(
-            label="📥 Download this sorted list (Excel)",
-            data=output.getvalue(),
-            file_name="Sorted_Booth_List.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        st.download_button("Download Excel", output.getvalue(), "Booth_List.xlsx")
     else:
-        st.error("No data found. Try a different page or check the PDF quality.")
+        st.error("AI read the page but couldn't find the specific words 'പേര്' or 'വയസ്സ്'.")
+        st.info("Try checking the 'Show AI Raw Text' box above to see what the AI is actually reading.")
